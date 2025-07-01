@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "fleethub-mobile",
+    "name": "FleetHub",
     "slug": "fleethub-mobile",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -10,20 +10,57 @@
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
+      "backgroundColor": "#1E88E5"
     },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": false,
+      "bundleIdentifier": "com.fleethub.mobile",
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "アプリが位置情報を使用して日報の記録場所を自動取得します。",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "アプリが位置情報を使用して日報の記録場所を自動取得します。",
+        "NSCameraUsageDescription": "日報に写真を添付するためにカメラを使用します。",
+        "NSMicrophoneUsageDescription": "音声メモを録音するためにマイクを使用します。"
+      }
     },
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#ffffff"
+        "backgroundColor": "#1E88E5"
       },
-      "edgeToEdgeEnabled": true
+      "edgeToEdgeEnabled": true,
+      "package": "com.fleethub.mobile",
+      "permissions": [
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION",
+        "CAMERA",
+        "RECORD_AUDIO"
+      ]
     },
     "web": {
       "favicon": "./assets/favicon.png"
-    }
+    },
+    "plugins": [
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "アプリが位置情報を使用して日報の記録場所を自動取得します。"
+        }
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "日報に写真を添付するためにカメラを使用します。"
+        }
+      ],
+      [
+        "expo-av",
+        {
+          "microphonePermission": "音声メモを録音するためにマイクを使用します。"
+        }
+      ]
+    ]
   }
 }
