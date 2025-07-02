@@ -17,6 +17,7 @@ import { StackScreenProps } from '@react-navigation/stack';
 import { RootStackParamList } from '../types';
 import { useAppStore } from '../services/store';
 import { authService } from '../services/authService';
+import { enhancedAuthService } from '../services/authService.enhanced';
 import { colors } from '../constants';
 
 type Props = StackScreenProps<RootStackParamList, 'Login'>;
@@ -78,7 +79,12 @@ const LoginScreen: React.FC<Props> = ({ navigation }) => {
     setIsLoading(true);
 
     try {
+      // 一時的に旧認証システムに戻してデバッグ
+      console.log('旧認証システムでログイン試行中...');
       const result = await authService.signInWithInvitationOnly(company, invitation);
+      
+      // TODO: ハイブリッド認証システムのデバッグ後に戻す
+      // const result = await enhancedAuthService.signInWithInvitationCode(company, invitation);
       
       if (result.error || !result.data) {
         if (!isAutoLogin) {

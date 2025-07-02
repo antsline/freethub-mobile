@@ -37,4 +37,9 @@ export const colors = {
   active: '#4CAF50',
   inactive: '#757575',
   pending: '#FF9800',
+  
+  // お気に入り機能専用色
+  favoriteGold: '#B8860B',
+  favoriteBackground: '#FFE4B5',
+  favoriteBorder: '#DAA520',
 };

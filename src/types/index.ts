@@ -16,12 +16,14 @@ export interface Driver {
   phone?: string;
   status: 'active' | 'inactive';
   auth_user_id?: string; // Supabase Auth UUID
+  created_at: string;
+  
+  // 将来の拡張用（現在はデータベースに存在しない可能性あり）
   license_number?: string; // 運転免許証番号
   license_expiry?: string; // 免許証有効期限
   hire_date?: string; // 雇用開始日
   emergency_contact_name?: string; // 緊急連絡先名
   emergency_contact_phone?: string; // 緊急連絡先電話
-  created_at: string;
 }
 
 export interface Vehicle {
@@ -175,12 +177,19 @@ export interface Notification {
 export interface FavoriteLocation {
   id: string;
   company_id: string;
+  driver_id: string; // UUID型（driversテーブルとFK制約あり）
   name: string;
   address?: string;
   lat?: number;
   lng?: number;
+  category?: 'delivery' | 'rest' | 'fuel' | 'parking' | 'other'; // 分類
+  memo?: string; // メモ・注意事項
   visit_count: number;
+  last_visited?: string; // 最後に訪問した日時
+  created_by: 'manual' | 'auto'; // 手動登録 or 自動提案
+  is_active: boolean; // アクティブフラグ
   created_at: string;
+  updated_at?: string;
 }
 
 export interface DriverInvitation {
@@ -207,7 +216,7 @@ export type ActionType =
   | '出発' | '到着' | '通過'
   | '積込開始' | '積込完了' | '荷降し開始' | '荷降し完了'
   | '休憩開始' | '休憩終了' | '待機開始' | '待機終了'
-  | '業務終了';
+  | '業務終了' | '現場記録';
 
 // アプリの状態管理
 export interface AppState {
@@ -231,6 +240,11 @@ export type RootStackParamList = {
     vehicle: Vehicle;
   };
   End: undefined;
+  FavoriteList: undefined;
+  FavoriteEdit: {
+    favoriteId: string;
+  };
+  FieldRecord: undefined;
 };
 
 // API レスポンス
@@ -246,6 +260,9 @@ export interface LocationData {
   accuracy?: number;
   address?: string;
   facilityName?: string;
+  nearbyPlaces?: Array<{ name: string; address: string; types?: string[]; distance?: number }>;
+  nextPageToken?: string;
+  hasMorePlaces?: boolean;
 }
 
 // 認証情報

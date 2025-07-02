@@ -146,15 +146,36 @@ class DatabaseService {
   // 日報関連
   async createDailyReport(report: Omit<DailyReport, 'id' | 'created_at'>): Promise<ApiResponse<DailyReport>> {
     try {
+      // デバッグ情報：現在のユーザー認証状況を確認
+      const { data: { user } } = await supabase.auth.getUser();
+      console.log('=== 日報作成デバッグ ===');
+      console.log('認証ユーザー:', user?.id);
+      console.log('挿入データ:', report);
+      
+      // driver_idに対応するauth_user_idを確認
+      const { data: driverData, error: driverError } = await supabase
+        .from('drivers')
+        .select('id, auth_user_id, name')
+        .eq('id', report.driver_id)
+        .single();
+      
+      console.log('ドライバー情報:', driverData);
+      console.log('ドライバーエラー:', driverError);
+
       const { data, error } = await supabase
         .from('daily_reports')
         .insert(report)
         .select()
         .single();
 
+      console.log('挿入結果:', data);
+      console.log('挿入エラー:', error);
+      console.log('=== デバッグ終了 ===');
+
       if (error) throw error;
       return { data, error: null };
     } catch (error: any) {
+      console.error('日報作成エラー詳細:', error);
       return { data: null, error: error.message };
     }
   }
@@ -179,13 +200,14 @@ class DatabaseService {
     }
   }
 
-  // よく行く場所関連
-  async getFavoriteLocations(companyId: string, limit: number = 10): Promise<ApiResponse<FavoriteLocation[]>> {
+  // お気に入り場所関連
+  async getFavoriteLocations(driverId: string, limit: number = 10): Promise<ApiResponse<FavoriteLocation[]>> {
     try {
       const { data, error } = await supabase
         .from('favorite_locations')
         .select('*')
-        .eq('company_id', companyId)
+        .eq('driver_id', driverId)
+        .eq('is_active', true)
         .order('visit_count', { ascending: false })
         .limit(limit);
 
@@ -196,44 +218,123 @@ class DatabaseService {
     }
   }
 
-  async incrementLocationVisit(companyId: string, name: string, address: string, lat?: number, lng?: number): Promise<ApiResponse<void>> {
+  async createFavoriteLocation(favoriteData: Omit<FavoriteLocation, 'id' | 'created_at' | 'updated_at'>): Promise<ApiResponse<FavoriteLocation>> {
+    try {
+      const { data, error } = await supabase
+        .from('favorite_locations')
+        .insert({
+          ...favoriteData,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        })
+        .select()
+        .single();
+
+      if (error) throw error;
+      return { data, error: null };
+    } catch (error: any) {
+      return { data: null, error: error.message };
+    }
+  }
+
+  async updateFavoriteLocation(id: string, updates: Partial<FavoriteLocation>): Promise<ApiResponse<FavoriteLocation>> {
+    try {
+      const { data, error } = await supabase
+        .from('favorite_locations')
+        .update({
+          ...updates,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', id)
+        .select()
+        .single();
+
+      if (error) throw error;
+      return { data, error: null };
+    } catch (error: any) {
+      return { data: null, error: error.message };
+    }
+  }
+
+  async deleteFavoriteLocation(id: string): Promise<ApiResponse<void>> {
+    try {
+      const { error } = await supabase
+        .from('favorite_locations')
+        .update({ is_active: false })
+        .eq('id', id);
+
+      if (error) throw error;
+      return { data: null, error: null };
+    } catch (error: any) {
+      return { data: null, error: error.message };
+    }
+  }
+
+  async getNearbyFavorites(driverId: string, lat: number, lng: number, radiusKm: number = 0.5): Promise<ApiResponse<FavoriteLocation[]>> {
+    try {
+      // 簡易的な距離計算（より正確な計算にはPostGISが必要）
+      const { data, error } = await supabase
+        .from('favorite_locations')
+        .select('*')
+        .eq('driver_id', driverId)
+        .eq('is_active', true)
+        .not('lat', 'is', null)
+        .not('lng', 'is', null);
+
+      if (error) throw error;
+      
+      // クライアント側で距離フィルタリング
+      const nearbyFavorites = (data || []).filter(favorite => {
+        if (!favorite.lat || !favorite.lng) return false;
+        const distance = this.calculateDistance(lat, lng, favorite.lat, favorite.lng);
+        return distance <= radiusKm;
+      });
+
+      return { data: nearbyFavorites, error: null };
+    } catch (error: any) {
+      return { data: null, error: error.message };
+    }
+  }
+
+  async incrementLocationVisit(driverId: string, name: string, address: string, lat?: number, lng?: number): Promise<ApiResponse<void>> {
     try {
       // 既存の場所を検索
       const { data: existing } = await supabase
         .from('favorite_locations')
         .select('*')
-        .eq('company_id', companyId)
+        .eq('driver_id', driverId)
         .eq('name', name)
+        .eq('is_active', true)
         .limit(1);
 
       if (existing && existing.length > 0) {
         // 既存の場所の訪問回数を増加
-        const { error } = await supabase
-          .from('favorite_locations')
-          .update({ visit_count: existing[0].visit_count + 1 })
-          .eq('id', existing[0].id);
-
-        if (error) throw error;
-      } else {
-        // 新しい場所を追加
-        const { error } = await supabase
-          .from('favorite_locations')
-          .insert({
-            company_id: companyId,
-            name,
-            address,
-            lat,
-            lng,
-            visit_count: 1,
-          });
-
-        if (error) throw error;
+        await this.updateFavoriteLocation(existing[0].id, {
+          visit_count: existing[0].visit_count + 1,
+          last_visited: new Date().toISOString(),
+        });
       }
 
       return { data: null, error: null };
     } catch (error: any) {
       return { data: null, error: error.message };
     }
+  }
+
+  // 距離計算ヘルパー（locationServiceと同じロジック）
+  private calculateDistance(lat1: number, lon1: number, lat2: number, lon2: number): number {
+    const R = 6371; // 地球の半径（km）
+    const φ1 = lat1 * Math.PI / 180;
+    const φ2 = lat2 * Math.PI / 180;
+    const Δφ = (lat2 - lat1) * Math.PI / 180;
+    const Δλ = (lon2 - lon1) * Math.PI / 180;
+
+    const a = Math.sin(Δφ / 2) * Math.sin(Δφ / 2) +
+              Math.cos(φ1) * Math.cos(φ2) *
+              Math.sin(Δλ / 2) * Math.sin(Δλ / 2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+
+    return R * c;
   }
 
   // 会社情報取得

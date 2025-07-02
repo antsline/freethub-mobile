@@ -11,6 +11,9 @@ import StartScreen from '../screens/StartScreen';
 import ActionSelectScreen from '../screens/ActionSelectScreen';
 import RecordConfirmScreen from '../screens/RecordConfirmScreen';
 import EndScreen from '../screens/EndScreen';
+import FavoriteListScreen from '../screens/FavoriteListScreen';
+import FavoriteEditScreen from '../screens/FavoriteEditScreen';
+import FieldRecordScreen from '../screens/FieldRecordScreen';
 
 const Stack = createStackNavigator<RootStackParamList>();
 
@@ -71,6 +74,30 @@ const AppNavigator: React.FC = () => {
               name="End" 
               component={EndScreen}
               options={{ title: '業務終了' }}
+            />
+            <Stack.Screen 
+              name="FavoriteList" 
+              component={FavoriteListScreen}
+              options={{ 
+                title: 'お気に入り一覧',
+                headerShown: false 
+              }}
+            />
+            <Stack.Screen 
+              name="FavoriteEdit" 
+              component={FavoriteEditScreen}
+              options={{ 
+                title: 'お気に入り編集',
+                headerShown: false 
+              }}
+            />
+            <Stack.Screen 
+              name="FieldRecord" 
+              component={FieldRecordScreen}
+              options={{ 
+                title: '現場記録',
+                headerShown: false 
+              }}
             />
           </>
         )}

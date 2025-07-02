@@ -8,10 +8,14 @@ import {
   ScrollView,
   Alert,
   ActivityIndicator,
+  Modal,
+  FlatList,
 } from 'react-native';
 import { StackScreenProps } from '@react-navigation/stack';
 import { format } from 'date-fns';
-import { RootStackParamList, LocationData } from '../types';
+import { zonedTimeToUtc, utcToZonedTime } from 'date-fns-tz';
+import { MaterialIcons, FontAwesome5 } from '@expo/vector-icons';
+import { RootStackParamList, LocationData, FavoriteLocation } from '../types';
 import { useAppStore } from '../services/store';
 import { databaseService } from '../services/databaseService';
 import { locationService } from '../services/locationService';
@@ -30,9 +34,32 @@ const RecordConfirmScreen: React.FC<Props> = ({ route, navigation }) => {
   const [memo, setMemo] = useState('');
   const [manualAddress, setManualAddress] = useState('');
   const [facilityName, setFacilityName] = useState('');
+  const [nearbyPlaces, setNearbyPlaces] = useState<Array<{ name: string; address: string; types?: string[]; distance?: number; isFavorite?: boolean; favoriteCategory?: string }>>([]);
+  const [showPlacesPicker, setShowPlacesPicker] = useState(false);
+  const [nextPageToken, setNextPageToken] = useState<string | undefined>();
+  const [hasMorePlaces, setHasMorePlaces] = useState(false);
+  const [isLoadingMorePlaces, setIsLoadingMorePlaces] = useState(false);
+  
+  // お気に入り関連
+  const [showFavoriteModal, setShowFavoriteModal] = useState(false);
+  const [favoriteCategory, setFavoriteCategory] = useState<'delivery' | 'rest' | 'fuel' | 'parking' | 'other'>('delivery');
+  const [favoriteMemo, setFavoriteMemo] = useState('');
+  const [isSavingFavorite, setIsSavingFavorite] = useState(false);
 
   // 走行距離入力が必要かどうか
   const needsOdometer = actionType === '到着' || actionType === '出発';
+
+  // カテゴリラベル取得
+  const getCategoryLabel = (category: string) => {
+    const labels = {
+      delivery: '配送先',
+      rest: '休憩場所',
+      fuel: '燃料補給',
+      parking: '駐車場',
+      other: 'その他',
+    };
+    return labels[category as keyof typeof labels] || category;
+  };
 
   useEffect(() => {
     getCurrentLocation();
@@ -47,13 +74,48 @@ const RecordConfirmScreen: React.FC<Props> = ({ route, navigation }) => {
       setIsLoadingLocation(true);
       const location = await locationService.getCurrentLocationWithAddress();
       
-      if (location) {
+      if (location && user) {
         setLocationData(location);
-        if (location.address) {
-          setManualAddress(location.address);
+        
+        // 近くのお気に入りをチェック
+        const nearbyFavorites = await databaseService.getNearbyFavorites(
+          user.id,
+          location.latitude,
+          location.longitude,
+          0.5 // 500m以内
+        );
+
+        // お気に入りが見つかった場合は優先表示
+        if (nearbyFavorites.data && nearbyFavorites.data.length > 0) {
+          const closestFavorite = nearbyFavorites.data[0];
+          setManualAddress(closestFavorite.address || location.address || '');
+          setFacilityName(closestFavorite.name);
+          
+          // 訪問回数を増加
+          await databaseService.incrementLocationVisit(
+            user.id,
+            closestFavorite.name,
+            closestFavorite.address || ''
+          );
+        } else {
+          // お気に入りがない場合は通常の処理
+          if (location.address) {
+            setManualAddress(location.address);
+          }
+          if (location.facilityName) {
+            setFacilityName(location.facilityName);
+          }
         }
-        if (location.facilityName) {
-          setFacilityName(location.facilityName);
+        
+        if (location.nearbyPlaces) {
+          const placesWithFavorites = await markFavoritesInPlaces(location.nearbyPlaces);
+          setNearbyPlaces(placesWithFavorites);
+        }
+        if (location.nextPageToken) {
+          setNextPageToken(location.nextPageToken);
+        }
+        if (location.hasMorePlaces !== undefined) {
+          setHasMorePlaces(location.hasMorePlaces);
         }
       } else {
         // 位置情報が取得できない場合は手動入力を促す（エラーは表示しない）
@@ -65,6 +127,107 @@ const RecordConfirmScreen: React.FC<Props> = ({ route, navigation }) => {
       setIsLoadingLocation(false);
     }
   };
+
+  const loadMorePlaces = async () => {
+    if (!nextPageToken || !locationData || isLoadingMorePlaces) return;
+
+    setIsLoadingMorePlaces(true);
+    try {
+      const result = await locationService.getNearbyPlaces(
+        locationData.latitude, 
+        locationData.longitude, 
+        200, 
+        nextPageToken
+      );
+      
+      if (result.places.length > 0) {
+        const newPlacesWithFavorites = await markFavoritesInPlaces(result.places);
+        setNearbyPlaces(prev => [...prev, ...newPlacesWithFavorites]);
+        setNextPageToken(result.nextPageToken);
+        setHasMorePlaces(result.hasMore);
+      }
+    } catch (error) {
+      console.error('追加の施設取得エラー:', error);
+    } finally {
+      setIsLoadingMorePlaces(false);
+    }
+  };
+
+  // 施設リストにお気に入り情報をマーク
+  const markFavoritesInPlaces = async (places: Array<{ name: string; address: string; types?: string[]; distance?: number }>) => {
+    if (!user) return places;
+
+    try {
+      const favorites = await databaseService.getFavoriteLocations(user.id, 100);
+      if (!favorites.data) return places;
+
+      return places.map(place => {
+        const favorite = favorites.data?.find(fav => 
+          fav.name.toLowerCase() === place.name.toLowerCase() ||
+          (fav.address && place.address && fav.address.includes(place.address.substring(0, 10)))
+        );
+
+        return {
+          ...place,
+          isFavorite: !!favorite,
+          favoriteCategory: favorite?.category,
+        };
+      });
+    } catch (error) {
+      console.error('お気に入り情報の取得エラー:', error);
+      return places;
+    }
+  };
+
+  const handleSaveFavorite = async () => {
+    if (!user || !manualAddress.trim() || !facilityName.trim()) {
+      Alert.alert('入力エラー', '住所と施設名を入力してください');
+      return;
+    }
+
+    setIsSavingFavorite(true);
+    try {
+      const favoriteData = {
+        company_id: user.company_id,
+        driver_id: user.id,
+        name: facilityName.trim(),
+        address: manualAddress.trim(),
+        lat: locationData?.latitude,
+        lng: locationData?.longitude,
+        category: favoriteCategory,
+        memo: favoriteMemo.trim() || undefined,
+        visit_count: 1,
+        last_visited: new Date().toISOString(),
+        created_by: 'manual' as const,
+        is_active: true,
+      };
+
+      const result = await databaseService.createFavoriteLocation(favoriteData);
+      
+      if (result.error) {
+        Alert.alert('登録エラー', result.error);
+        return;
+      }
+
+      Alert.alert(
+        '登録完了',
+        'お気に入りに登録されました',
+        [{ 
+          text: 'OK', 
+          onPress: () => {
+            setShowFavoriteModal(false);
+            setFavoriteMemo('');
+          }
+        }]
+      );
+
+    } catch (error: any) {
+      Alert.alert('エラー', error.message || 'お気に入りの登録に失敗しました');
+    } finally {
+      setIsSavingFavorite(false);
+    }
+  };
+
 
   const handleConfirm = async () => {
     if (needsOdometer && !odometer.trim()) {
@@ -88,7 +251,7 @@ const RecordConfirmScreen: React.FC<Props> = ({ route, navigation }) => {
         driver_id: user.id,
         vehicle_id: vehicle.id,
         action_type: actionType,
-        timestamp: new Date().toISOString(),
+        timestamp: zonedTimeToUtc(new Date(), 'Asia/Tokyo').toISOString(),
         location_lat: locationData?.latitude,
         location_lng: locationData?.longitude,
         address: manualAddress || locationData?.address,
@@ -184,17 +347,40 @@ const RecordConfirmScreen: React.FC<Props> = ({ route, navigation }) => {
 
               <View style={styles.inputContainer}>
                 <Text style={styles.inputLabel}>施設名</Text>
-                <TextInput
-                  style={styles.textInput}
-                  value={facilityName}
-                  onChangeText={setFacilityName}
-                  placeholder="施設名（任意）"
-                />
+                <View style={styles.facilityInputContainer}>
+                  <TextInput
+                    style={[styles.textInput, styles.facilityInput]}
+                    value={facilityName}
+                    onChangeText={setFacilityName}
+                    placeholder="施設名（任意）"
+                  />
+                  {nearbyPlaces.length > 0 && (
+                    <TouchableOpacity 
+                      style={styles.dropdownButton}
+                      onPress={() => setShowPlacesPicker(true)}
+                    >
+                      <Text style={styles.dropdownButtonText}>▼ 他の候補</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
               </View>
 
-              <TouchableOpacity style={styles.refreshButton} onPress={getCurrentLocation}>
-                <Text style={styles.refreshButtonText}>位置情報を再取得</Text>
-              </TouchableOpacity>
+              <View style={styles.buttonRow}>
+                <TouchableOpacity style={styles.refreshButton} onPress={getCurrentLocation}>
+                  <Text style={styles.refreshButtonText}>位置情報を再取得</Text>
+                </TouchableOpacity>
+                
+                <TouchableOpacity 
+                  style={styles.favoriteButton} 
+                  onPress={() => setShowFavoriteModal(true)}
+                  disabled={!manualAddress.trim() || !facilityName.trim()}
+                >
+                  <View style={styles.buttonContent}>
+                    <MaterialIcons name="favorite-border" size={16} color={colors.white} />
+                    <Text style={styles.favoriteButtonText}>お気に入り登録</Text>
+                  </View>
+                </TouchableOpacity>
+              </View>
             </>
           )}
         </View>
@@ -258,6 +444,177 @@ const RecordConfirmScreen: React.FC<Props> = ({ route, navigation }) => {
           )}
         </TouchableOpacity>
       </View>
+
+      {/* 施設名選択モーダル */}
+      <Modal
+        visible={showPlacesPicker}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowPlacesPicker(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>施設を選択</Text>
+            <FlatList
+              data={nearbyPlaces}
+              keyExtractor={(item, index) => index.toString()}
+              renderItem={({ item }) => (
+                <TouchableOpacity
+                  style={styles.placeItem}
+                  onPress={() => {
+                    setFacilityName(item.name);
+                    setShowPlacesPicker(false);
+                  }}
+                >
+                  <View style={styles.placeItemHeader}>
+                    <Text style={styles.placeName}>{item.name}</Text>
+                    {item.isFavorite && (
+                      <View style={styles.favoriteTag}>
+                        <View style={styles.favoriteTagContent}>
+                          <MaterialIcons name="favorite" size={12} color="#B8860B" />
+                          <Text style={styles.favoriteTagText}>
+                            お気に入り
+                            {item.favoriteCategory && ` (${getCategoryLabel(item.favoriteCategory)})`}
+                          </Text>
+                        </View>
+                      </View>
+                    )}
+                  </View>
+                  <Text style={styles.placeAddress}>{item.address}</Text>
+                </TouchableOpacity>
+              )}
+            />
+            
+            {/* さらに探すボタン */}
+            {hasMorePlaces && (
+              <TouchableOpacity
+                style={[styles.loadMoreButton, isLoadingMorePlaces && styles.loadMoreButtonDisabled]}
+                onPress={loadMorePlaces}
+                disabled={isLoadingMorePlaces}
+              >
+                {isLoadingMorePlaces ? (
+                  <ActivityIndicator size="small" color={colors.primary} />
+                ) : (
+                  <View style={styles.buttonContent}>
+                    <MaterialIcons name="add" size={16} color={colors.primary} />
+                    <Text style={styles.loadMoreButtonText}>さらに探す</Text>
+                  </View>
+                )}
+              </TouchableOpacity>
+            )}
+            
+            <TouchableOpacity
+              style={styles.modalCloseButton}
+              onPress={() => setShowPlacesPicker(false)}
+            >
+              <Text style={styles.modalCloseButtonText}>キャンセル</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* お気に入り登録モーダル */}
+      <Modal
+        visible={showFavoriteModal}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowFavoriteModal(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>お気に入りに登録</Text>
+            
+            {/* 登録内容確認 */}
+            <View style={styles.favoritePreview}>
+              <Text style={styles.favoritePreviewLabel}>住所</Text>
+              <Text style={styles.favoritePreviewValue}>{manualAddress}</Text>
+              
+              <Text style={styles.favoritePreviewLabel}>施設名</Text>
+              <Text style={styles.favoritePreviewValue}>{facilityName}</Text>
+            </View>
+
+            {/* カテゴリ選択 */}
+            <View style={styles.categorySection}>
+              <Text style={styles.categoryLabel}>分類</Text>
+              <View style={styles.categoryButtons}>
+                {[
+                  { key: 'delivery', label: '配送先', iconName: 'local-shipping', iconSet: 'MaterialIcons' },
+                  { key: 'rest', label: '休憩場所', iconName: 'coffee', iconSet: 'FontAwesome5' },
+                  { key: 'fuel', label: '燃料補給', iconName: 'local-gas-station', iconSet: 'MaterialIcons' },
+                  { key: 'parking', label: '駐車場', iconName: 'local-parking', iconSet: 'MaterialIcons' },
+                  { key: 'other', label: 'その他', iconName: 'place', iconSet: 'MaterialIcons' },
+                ].map((category) => (
+                  <TouchableOpacity
+                    key={category.key}
+                    style={[
+                      styles.categoryButton,
+                      favoriteCategory === category.key && styles.categoryButtonSelected
+                    ]}
+                    onPress={() => setFavoriteCategory(category.key as any)}
+                  >
+                    <View style={styles.categoryIconContainer}>
+                      {category.iconSet === 'MaterialIcons' ? (
+                        <MaterialIcons 
+                          name={category.iconName as any} 
+                          size={16} 
+                          color={favoriteCategory === category.key ? colors.white : colors.text}
+                        />
+                      ) : (
+                        <FontAwesome5 
+                          name={category.iconName as any} 
+                          size={14} 
+                          color={favoriteCategory === category.key ? colors.white : colors.text}
+                        />
+                      )}
+                    </View>
+                    <Text style={[
+                      styles.categoryText,
+                      favoriteCategory === category.key && styles.categoryTextSelected
+                    ]}>
+                      {category.label}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </View>
+
+            {/* メモ入力 */}
+            <View style={styles.memoSection}>
+              <Text style={styles.memoLabel}>メモ（任意）</Text>
+              <TextInput
+                style={styles.memoInput}
+                value={favoriteMemo}
+                onChangeText={setFavoriteMemo}
+                placeholder="注意事項や特記事項があれば入力"
+                multiline
+                numberOfLines={3}
+              />
+            </View>
+
+            {/* ボタン */}
+            <View style={styles.favoriteModalButtons}>
+              <TouchableOpacity
+                style={styles.favoriteCancelButton}
+                onPress={() => setShowFavoriteModal(false)}
+              >
+                <Text style={styles.favoriteCancelButtonText}>キャンセル</Text>
+              </TouchableOpacity>
+              
+              <TouchableOpacity
+                style={[styles.favoriteSaveButton, isSavingFavorite && styles.favoriteSaveButtonDisabled]}
+                onPress={handleSaveFavorite}
+                disabled={isSavingFavorite}
+              >
+                {isSavingFavorite ? (
+                  <ActivityIndicator color={colors.white} size="small" />
+                ) : (
+                  <Text style={styles.favoriteSaveButtonText}>登録する</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </ScrollView>
   );
 };
@@ -355,13 +712,15 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   refreshButton: {
-    alignSelf: 'flex-start',
+    flex: 1,
     paddingHorizontal: 16,
     paddingVertical: 8,
     borderWidth: 1,
     borderColor: colors.primary,
     borderRadius: 6,
-    marginTop: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 36,
   },
   refreshButtonText: {
     color: colors.primary,
@@ -384,6 +743,253 @@ const styles = StyleSheet.create({
     color: colors.white,
     fontSize: 18,
     fontWeight: 'bold',
+  },
+  facilityInputContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  facilityInput: {
+    flex: 1,
+    marginRight: 8,
+  },
+  dropdownButton: {
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    backgroundColor: colors.primary,
+    borderRadius: 8,
+  },
+  dropdownButtonText: {
+    color: colors.white,
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'flex-end',
+  },
+  modalContent: {
+    backgroundColor: colors.white,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    padding: 20,
+    maxHeight: '70%',
+  },
+  modalTitle: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: colors.text,
+    marginBottom: 16,
+    textAlign: 'center',
+  },
+  placeItem: {
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+  },
+  placeItemHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    marginBottom: 4,
+  },
+  placeName: {
+    flex: 1,
+    fontSize: 16,
+    fontWeight: '600',
+    color: colors.text,
+    marginRight: 8,
+  },
+  placeAddress: {
+    fontSize: 14,
+    color: colors.textSecondary,
+  },
+  favoriteTag: {
+    backgroundColor: '#FFE4B5',
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#DAA520',
+  },
+  favoriteTagContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  favoriteTagText: {
+    fontSize: 12,
+    color: '#B8860B',
+    fontWeight: '600',
+  },
+  modalCloseButton: {
+    marginTop: 16,
+    paddingVertical: 12,
+    backgroundColor: colors.lightGray,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  modalCloseButtonText: {
+    fontSize: 16,
+    color: colors.textSecondary,
+    fontWeight: '600',
+  },
+  loadMoreButton: {
+    marginTop: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    backgroundColor: colors.white,
+    borderRadius: 8,
+    borderWidth: 2,
+    borderColor: colors.primary,
+    alignItems: 'center',
+    flexDirection: 'row',
+    justifyContent: 'center',
+  },
+  loadMoreButtonDisabled: {
+    opacity: 0.6,
+  },
+  loadMoreButtonText: {
+    fontSize: 16,
+    color: colors.primary,
+    fontWeight: '600',
+    marginLeft: 4,
+  },
+  buttonRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginTop: 8,
+  },
+  favoriteButton: {
+    flex: 1,
+    marginLeft: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    backgroundColor: colors.primary,
+    borderRadius: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 36,
+  },
+  buttonContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  favoriteButtonText: {
+    color: colors.white,
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  favoritePreview: {
+    backgroundColor: colors.lightGray,
+    borderRadius: 8,
+    padding: 12,
+    marginBottom: 16,
+  },
+  favoritePreviewLabel: {
+    fontSize: 14,
+    color: colors.textSecondary,
+    fontWeight: '600',
+    marginBottom: 4,
+  },
+  favoritePreviewValue: {
+    fontSize: 16,
+    color: colors.text,
+    marginBottom: 8,
+  },
+  categorySection: {
+    marginBottom: 16,
+  },
+  categoryLabel: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: colors.text,
+    marginBottom: 12,
+  },
+  categoryButtons: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  categoryButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 20,
+    backgroundColor: colors.lightGray,
+    borderWidth: 1,
+    borderColor: colors.border,
+    marginBottom: 8,
+  },
+  categoryButtonSelected: {
+    backgroundColor: colors.primary,
+    borderColor: colors.primary,
+  },
+  categoryIconContainer: {
+    marginRight: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  categoryText: {
+    fontSize: 14,
+    color: colors.text,
+    fontWeight: '500',
+  },
+  categoryTextSelected: {
+    color: colors.white,
+  },
+  memoSection: {
+    marginBottom: 16,
+  },
+  memoLabel: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: colors.text,
+    marginBottom: 8,
+  },
+  memoInput: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 8,
+    padding: 12,
+    fontSize: 16,
+    backgroundColor: colors.lightGray,
+    textAlignVertical: 'top',
+    minHeight: 80,
+  },
+  favoriteModalButtons: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  favoriteCancelButton: {
+    flex: 1,
+    paddingVertical: 12,
+    backgroundColor: colors.lightGray,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  favoriteCancelButtonText: {
+    fontSize: 16,
+    color: colors.textSecondary,
+    fontWeight: '600',
+  },
+  favoriteSaveButton: {
+    flex: 1,
+    paddingVertical: 12,
+    backgroundColor: colors.primary,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  favoriteSaveButtonDisabled: {
+    opacity: 0.6,
+  },
+  favoriteSaveButtonText: {
+    fontSize: 16,
+    color: colors.white,
+    fontWeight: '600',
   },
 });
 

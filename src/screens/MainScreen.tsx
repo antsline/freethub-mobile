@@ -10,7 +10,9 @@ import {
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { StackScreenProps } from '@react-navigation/stack';
+import { MaterialIcons } from '@expo/vector-icons';
 import { format } from 'date-fns';
+import { zonedTimeToUtc, utcToZonedTime } from 'date-fns-tz';
 import { ja } from 'date-fns/locale';
 import { RootStackParamList, ActionType } from '../types';
 import { useAppStore } from '../services/store';
@@ -24,8 +26,9 @@ const MainScreen: React.FC<Props> = ({ navigation }) => {
   const [isRefreshing, setIsRefreshing] = useState(false);
 
   // 本日の日付
-  const today = format(new Date(), 'yyyy-MM-dd');
-  const todayDisplay = format(new Date(), 'MM月dd日(E)', { locale: ja });
+  const tokyoTime = utcToZonedTime(new Date(), 'Asia/Tokyo');
+  const today = format(tokyoTime, 'yyyy-MM-dd');
+  const todayDisplay = format(tokyoTime, 'MM月dd日(E)', { locale: ja });
 
   // 今日の記録を取得
   const fetchTodayReports = async () => {
@@ -212,6 +215,14 @@ const MainScreen: React.FC<Props> = ({ navigation }) => {
             <Text style={styles.actionButtonText}>休憩</Text>
             <Text style={styles.actionSubText}>休憩・待機</Text>
           </TouchableOpacity>
+
+          <TouchableOpacity 
+            style={[styles.actionButton, styles.memoButton]}
+            onPress={() => navigation.navigate('FieldRecord')}
+          >
+            <Text style={styles.actionButtonText}>現場記録</Text>
+            <Text style={styles.actionSubText}>メモ・写真</Text>
+          </TouchableOpacity>
         </View>
 
         {/* 最近の記録 */}
@@ -226,7 +237,7 @@ const MainScreen: React.FC<Props> = ({ navigation }) => {
                   <View style={styles.recordHeader}>
                     <Text style={styles.recordAction}>{report.action_type}</Text>
                     <Text style={styles.recordTime}>
-                      {format(new Date(report.timestamp), 'HH:mm')}
+                      {format(utcToZonedTime(new Date(report.timestamp), 'Asia/Tokyo'), 'HH:mm', { locale: ja })}
                     </Text>
                   </View>
                   {report.address && (
@@ -240,6 +251,18 @@ const MainScreen: React.FC<Props> = ({ navigation }) => {
           ) : (
             <Text style={styles.noRecordsText}>今日の記録はまだありません</Text>
           )}
+        </View>
+
+        {/* お気に入り管理 */}
+        <View style={styles.favoriteContainer}>
+          <TouchableOpacity 
+            style={styles.favoriteButton}
+            onPress={() => navigation.navigate('FavoriteList')}
+          >
+            <MaterialIcons name="favorite" size={24} color={colors.primary} />
+            <Text style={styles.favoriteButtonText}>お気に入り一覧</Text>
+            <MaterialIcons name="chevron-right" size={24} color={colors.textSecondary} />
+          </TouchableOpacity>
         </View>
 
         {/* 業務終了ボタン */}
@@ -400,6 +423,9 @@ const styles = StyleSheet.create({
   restButton: {
     backgroundColor: colors.rest,
   },
+  memoButton: {
+    backgroundColor: '#8B5CF6', // 紫色
+  },
   actionButtonText: {
     color: colors.white,
     fontSize: 18,
@@ -465,6 +491,29 @@ const styles = StyleSheet.create({
     color: colors.textSecondary,
     fontSize: 16,
     padding: 20,
+  },
+  favoriteContainer: {
+    marginTop: 16,
+    marginHorizontal: 16,
+  },
+  favoriteButton: {
+    backgroundColor: colors.white,
+    borderRadius: 8,
+    padding: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    shadowColor: colors.black,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  favoriteButtonText: {
+    flex: 1,
+    fontSize: 16,
+    fontWeight: '500',
+    color: colors.text,
+    marginLeft: 12,
   },
   endWorkContainer: {
     padding: 16,
